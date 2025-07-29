@@ -47,7 +47,7 @@ public class ApplicantDocumentValidation {
         JSONObject docMappingJson = utility.getRegistrationProcessorMappingJson(MappingJsonConstants.DOCUMENT);
 
         for (Object doc : docMappingJson.values()) {
-            Map docMap = (LinkedHashMap) doc;
+        	Map<?, ?> docMap = (Map<?, ?>) doc;
             String docValue = docMap.values().iterator().next().toString();
             String idObjectField = packetManagerService.getField(registrationId, docValue, process, ProviderStageName.PACKET_VALIDATOR);
             if (idObjectField != null) {
@@ -85,11 +85,8 @@ public class ApplicantDocumentValidation {
                 return false;
         }
 
-
         regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.REGISTRATIONID.toString(),
                 registrationId, "ApplicantDocumentValidation::validateApplicantData::exit");
         return true;
     }
-
-
 }

@@ -2,17 +2,21 @@ package io.mosip.registration.processor.rest.client.utils;
 
 import java.io.IOException;
 import java.net.URI;
-import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.commons.lang3.exception.ExceptionUtils;
-import org.apache.hc.core5.http.Header;
-import org.apache.hc.core5.http.ParseException;
-import org.apache.http.HttpResponse;
+import org.apache.hc.client5.http.classic.HttpClient;
 import org.apache.hc.client5.http.classic.methods.HttpPost;
-import org.apache.hc.client5.http.impl.classic.*;
-import org.apache.hc.core5.http.io.entity.EntityUtils;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager;
+import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.io.entity.StringEntity;
+import org.apache.hc.core5.util.TimeValue;
+import org.apache.hc.core5.http.ClassicHttpResponse;
+import org.apache.hc.core5.http.io.HttpClientResponseHandler;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.web.client.RestTemplateBuilder;
@@ -20,7 +24,6 @@ import org.springframework.core.env.Environment;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -45,294 +48,383 @@ import io.mosip.registration.processor.rest.client.audit.dto.SecretKeyRequest;
 import io.mosip.registration.processor.rest.client.audit.dto.TokenRequestDTO;
 import io.mosip.registration.processor.rest.client.exception.TokenGenerationFailedException;
 
+import jakarta.annotation.PostConstruct;
+
 /**
- * The Class RestApiClient.
+ * A utility class for making REST API calls with token-based authentication.
+ * This class provides methods for performing HTTP GET, POST, PATCH, PUT, HEAD, and DELETE requests
+ * using Spring's RestTemplate, with optimized connection pooling and thread-safe token management.
+ * It retrieves authentication tokens from a configured token issuer and handles token expiration
+ * by resetting the token on 401 errors.
  *
  * @author Rishabh Keshari
  */
 @Component
 public class RestApiClient {
 
-	/** The logger. */
-	private final Logger logger = RegProcessorLogger.getLogger(RestApiClient.class);
+    /** The logger instance for logging operations and errors. */
+    private static final Logger logger = RegProcessorLogger.getLogger(RestApiClient.class);
 
-	/** The builder. */
-	@Autowired
-	RestTemplateBuilder builder;
+    /** The RestTemplateBuilder for creating RestTemplate instances. */
+    @Autowired
+    private RestTemplateBuilder builder;
 
-	@Autowired
-	Environment environment;
+    /** The environment to retrieve configuration properties. */
+    @Autowired
+    private Environment environment;
 
-	private static final String AUTHORIZATION = "Authorization=";
+    /** The RestTemplate configured for self-token authentication. */
+    @Autowired
+    @Qualifier("selfTokenRestTemplate")
+    private RestTemplate localRestTemplate;
 
-	@Autowired
-	@Qualifier("selfTokenRestTemplate")
-	RestTemplate localRestTemplate;
+    /** The ObjectMapper for JSON serialization and deserialization. */
+    @Autowired
+    private ObjectMapper objMp;
 
-	@Autowired
-	ObjectMapper objMp;
+    /** The prefix for the Authorization header. */
+    private static final String AUTHORIZATION = "Authorization=";
 
-	/**
-	 * Gets the api. *
-	 * 
-	 * @param <T>          the generic type
-	 * @param uri          the get URI
-	 * @param responseType the response type
-	 * @return the api
-	 * @throws Exception
-	 */
-	@SuppressWarnings("unchecked")
-	public <T> T getApi(URI uri, Class<?> responseType) throws Exception {
-		T result = null;
+    /** Thread-safe storage for the bearer token. */
+    private static final AtomicReference<String> bearerToken = new AtomicReference<>();
 
-		try {
-			result = (T) localRestTemplate.exchange(uri, HttpMethod.GET, setRequestHeader(null, null), responseType)
-					.getBody();
-		} catch (Exception e) {
-			logger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
-					LoggerFileConstant.APPLICATIONID.toString(), e.getMessage() + ExceptionUtils.getStackTrace(e));
-			tokenExceptionHandler(e);
-			throw e;
-		}
-		return result;
-	}
+    /** The HTTP client with connection pooling for token requests. */
+    private static volatile CloseableHttpClient pooledHttpClient;
 
-	/**
-	 * Post api.
-	 *
-	 * @param <T>           the generic type
-	 * @param uri           the uri
-	 * @param requestType   the request type
-	 * @param responseClass the response class
-	 * @return the t
-	 */
-	@SuppressWarnings("unchecked")
-	public <T> T postApi(String uri, MediaType mediaType, Object requestType, Class<?> responseClass) throws Exception {
+    /** The URL of the token issuer. */
+    private String tokenIssuerUrl;
 
-		T result = null;
-		try {
-			logger.info(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
-					LoggerFileConstant.APPLICATIONID.toString(), uri);
-			result = (T) localRestTemplate.postForObject(uri, setRequestHeader(requestType, mediaType), responseClass);
+    /** The client ID for token requests. */
+    private String tokenClientId;
 
-		} catch (Exception e) {
-			logger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
-					LoggerFileConstant.APPLICATIONID.toString(), e.getMessage() + ExceptionUtils.getStackTrace(e));
-			tokenExceptionHandler(e);
-			throw e;
-		}
-		return result;
-	}
+    /** The application ID for token requests. */
+    private String tokenAppId;
 
-	/**
-	 * Patch api.
-	 *
-	 * @param <T>           the generic type
-	 * @param uri           the uri
-	 * @param requestType   the request type
-	 * @param responseClass the response class
-	 * @return the t
-	 */
-	@SuppressWarnings("unchecked")
-	public <T> T patchApi(String uri, MediaType mediaType, Object requestType, Class<?> responseClass)
-			throws Exception {
+    /** The secret key for token requests. */
+    private String tokenSecretKey;
 
-		T result = null;
-		try {
-			logger.info(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
-					LoggerFileConstant.APPLICATIONID.toString(), uri);
-			result = (T) localRestTemplate.patchForObject(uri, setRequestHeader(requestType, mediaType), responseClass);
+    /** The ID for the token request DTO. */
+    private String tokenId;
 
-		} catch (Exception e) {
-			logger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
-					LoggerFileConstant.APPLICATIONID.toString(), e.getMessage() + ExceptionUtils.getStackTrace(e));
-			tokenExceptionHandler(e);
-			throw e;
-		}
-		return result;
-	}
+    /** The version for the token request DTO. */
+    private String tokenVersion;
 
-	public <T> T patchApi(String uri, Object requestType, Class<?> responseClass) throws Exception {
-		return patchApi(uri, null, requestType, responseClass);
-	}
+    /** The endpoint for token API requests. */
+    private String tokenApiEndpoint;
 
-	/**
-	 * Put api.
-	 *
-	 * @param <T>           the generic type
-	 * @param uri           the uri
-	 * @param requestType   the request type
-	 * @param responseClass the response class
-	 * @param mediaType
-	 * @return the t
-	 * @throws Exception the exception
-	 */
-	@SuppressWarnings("unchecked")
-	public <T> T putApi(String uri, Object requestType, Class<?> responseClass, MediaType mediaType) throws Exception {
+    /** The maximum total connections in the HTTP connection pool. */
+    private int maxConnTotal;
 
-		T result = null;
-		ResponseEntity<T> response = null;
-		try {
-			logger.info(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
-					LoggerFileConstant.APPLICATIONID.toString(), uri);
+    /** The maximum connections per route in the HTTP connection pool. */
+    private int maxConnPerRoute;
 
-			response = (ResponseEntity<T>) localRestTemplate.exchange(uri, HttpMethod.PUT,
-					setRequestHeader(requestType, mediaType), responseClass);
-			result = response.getBody();
-		} catch (Exception e) {
-			logger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
-					LoggerFileConstant.APPLICATIONID.toString(), e.getMessage() + ExceptionUtils.getStackTrace(e));
-			tokenExceptionHandler(e);
-			throw e;
-		}
-		return result;
-	}
+    /** The duration (in seconds) after which idle connections are evicted. */
+    private long idleConnEvictSecs;
 
-	public int headApi(URI uri) throws Exception {
-		try {
-			HttpStatusCode httpStatus = localRestTemplate
-					.exchange(uri, HttpMethod.HEAD, setRequestHeader(null, null), Object.class).getStatusCode();
-			return httpStatus.value();
-		} catch (Exception e) {
-			logger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
-					LoggerFileConstant.APPLICATIONID.toString(), e.getMessage() + ExceptionUtils.getStackTrace(e));
-			tokenExceptionHandler(e);
-			throw e;
-		}
-	}
+    /**
+     * Initializes the RestApiClient by loading configuration properties and setting up
+     * the HTTP client with connection pooling for efficient token requests.
+     */
+    @PostConstruct
+    public void init() {
+        tokenIssuerUrl = environment.getProperty("token.request.issuerUrl");
+        tokenClientId = environment.getProperty("token.request.clientId");
+        tokenAppId = environment.getProperty("token.request.appid");
+        tokenSecretKey = environment.getProperty("token.request.secretKey");
+        tokenId = environment.getProperty("token.request.id");
+        tokenVersion = environment.getProperty("token.request.version");
+        tokenApiEndpoint = environment.getProperty("KEYBASEDTOKENAPI");
 
-	public RestTemplate getRestTemplate() {
-		return localRestTemplate;
-	}
+        maxConnTotal = Integer.parseInt(environment.getProperty("mosip.kernel.httpclient.max.connection", "100"));
+        maxConnPerRoute = Integer.parseInt(environment.getProperty("mosip.kernel.httpclient.max.connection.per.route", "20"));
+        idleConnEvictSecs = Long.parseLong(environment.getProperty("mosip.kernel.httpclient.idle.evict.seconds", "30"));
 
-	/**
-	 * this method sets token to header of the request
-	 *
-	 * @param requestType
-	 * @param mediaType
-	 * @return
-	 * @throws IOException
-	 */
-	@SuppressWarnings("unchecked")
-	private HttpEntity<Object> setRequestHeader(Object requestType, MediaType mediaType) throws IOException {
-		MultiValueMap<String, String> headers = new LinkedMultiValueMap<String, String>();
-		// headers.add("Cookie", getToken());
-		headers.add(TracingConstant.TRACE_HEADER, (String) ContextualData.getOrDefault(TracingConstant.TRACE_ID_KEY));
-		if (mediaType != null) {
-			headers.add("Content-Type", mediaType.toString());
-		}
-		if (requestType != null) {
-			try {
-				HttpEntity<Object> httpEntity = (HttpEntity<Object>) requestType;
-				HttpHeaders httpHeader = httpEntity.getHeaders();
-				Iterator<String> iterator = httpHeader.keySet().iterator();
-				while (iterator.hasNext()) {
-					String key = iterator.next();
-					List<String> collection = httpHeader.get(key);
-					if ((collection != null && !collection.isEmpty())
-							&& !(headers.containsKey("Content-Type") && key.equalsIgnoreCase("Content-Type")))
-						headers.add(key, collection.get(0));
+        PoolingHttpClientConnectionManager connManager = new PoolingHttpClientConnectionManager();
+        connManager.setMaxTotal(maxConnTotal);
+        connManager.setDefaultMaxPerRoute(maxConnPerRoute);
+        pooledHttpClient = HttpClients.custom()
+                .setConnectionManager(connManager)
+                .evictIdleConnections(TimeValue.ofSeconds(idleConnEvictSecs))
+                .setConnectionReuseStrategy((request, response, context) -> true)
+                .build();
+    }
 
-				}
-				return new HttpEntity<Object>(httpEntity.getBody(), headers);
-			} catch (ClassCastException e) {
-				return new HttpEntity<Object>(requestType, headers);
-			}
-		} else
-			return new HttpEntity<Object>(headers);
-	}
+    /**
+     * Performs an HTTP GET request to the specified URI.
+     *
+     * @param <T>          the type of the response object
+     * @param uri          the URI to send the GET request to
+     * @param responseType the class of the response object
+     * @return the response body deserialized into the specified type
+     * @throws Exception if the request fails or an error occurs
+     */
+    @SuppressWarnings("unchecked")
+    public <T> T getApi(URI uri, Class<?> responseType) throws Exception {
+        try {
+            HttpEntity<Object> entity = setRequestHeader(null, null);
+            return (T) localRestTemplate.exchange(uri, HttpMethod.GET, entity, responseType).getBody();
+        } catch (Exception e) {
+            logError(e);
+            tokenExceptionHandler(e);
+            throw e;
+        }
+    }
 
-	/**
-	 * This method gets the token for the user details present in config server.
-	 *
-	 * @return
-	 * @throws IOException
-	 * @throws ParseException
-	 */
-	public String getToken() throws IOException, ParseException {
-		String token = System.getProperty("token");
-		boolean isValid = false;
+    /**
+     * Performs an HTTP POST request to the specified URI.
+     *
+     * @param <T>           the type of the response object
+     * @param uri           the URI to send the POST request to
+     * @param mediaType     the media type of the request body (e.g., application/json)
+     * @param requestType   the request body object
+     * @param responseClass the class of the response object
+     * @return the response body deserialized into the specified type
+     * @throws Exception if the request fails or an error occurs
+     */
+    @SuppressWarnings("unchecked")
+    public <T> T postApi(String uri, MediaType mediaType, Object requestType, Class<?> responseClass) throws Exception {
+        try {
+            logger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
+                    LoggerFileConstant.APPLICATIONID.toString(), "POST request to: " + uri);
+            return (T) localRestTemplate.postForObject(uri, setRequestHeader(requestType, mediaType), responseClass);
+        } catch (Exception e) {
+            logError(e);
+            tokenExceptionHandler(e);
+            throw e;
+        }
+    }
 
-		if (StringUtils.isNotEmpty(token)) {
+    /**
+     * Performs an HTTP PATCH request to the specified URI with the given media type.
+     *
+     * @param <T>           the type of the response object
+     * @param uri           the URI to send the PATCH request to
+     * @param mediaType     the media type of the request body (e.g., application/json)
+     * @param requestType   the request body object
+     * @param responseClass the class of the response object
+     * @return the response body deserialized into the specified type
+     * @throws Exception if the request fails or an error occurs
+     */
+    @SuppressWarnings("unchecked")
+    public <T> T patchApi(String uri, MediaType mediaType, Object requestType, Class<?> responseClass) throws Exception {
+        try {
+            logger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
+                    LoggerFileConstant.APPLICATIONID.toString(), "PATCH request to: " + uri);
+            return (T) localRestTemplate.patchForObject(uri, setRequestHeader(requestType, mediaType), responseClass);
+        } catch (Exception e) {
+            logError(e);
+            tokenExceptionHandler(e);
+            throw e;
+        }
+    }
 
-			isValid = TokenHandlerUtil.isValidBearerToken(token, environment.getProperty("token.request.issuerUrl"),
-					environment.getProperty("token.request.clientId"));
+    /**
+     * Performs an HTTP PATCH request to the specified URI without a media type.
+     *
+     * @param <T>           the type of the response object
+     * @param uri           the URI to send the PATCH request to
+     * @param requestType   the request body object
+     * @param responseClass the class of the response object
+     * @return the response body deserialized into the specified type
+     * @throws Exception if the request fails or an error occurs
+     */
+    public <T> T patchApi(String uri, Object requestType, Class<?> responseClass) throws Exception {
+        return patchApi(uri, null, requestType, responseClass);
+    }
 
-		}
-		if (!isValid) {
-			TokenRequestDTO<SecretKeyRequest> tokenRequestDTO = new TokenRequestDTO<SecretKeyRequest>();
-			tokenRequestDTO.setId(environment.getProperty("token.request.id"));
-			tokenRequestDTO.setMetadata(new Metadata());
+    /**
+     * Performs an HTTP PUT request to the specified URI.
+     *
+     * @param <T>           the type of the response object
+     * @param uri           the URI to send the PUT request to
+     * @param requestType   the request body object
+     * @param responseClass the class of the response object
+     * @param mediaType     the media type of the request body (e.g., application/json)
+     * @return the response body deserialized into the specified type
+     * @throws Exception if the request fails or an error occurs
+     */
+    @SuppressWarnings("unchecked")
+    public <T> T putApi(String uri, Object requestType, Class<?> responseClass, MediaType mediaType) throws Exception {
+        try {
+            logger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
+                    LoggerFileConstant.APPLICATIONID.toString(), "PUT request to: " + uri);
+            ResponseEntity<T> response = (ResponseEntity<T>) localRestTemplate.exchange(uri, HttpMethod.PUT,
+                    setRequestHeader(requestType, mediaType), responseClass);
+            return response.getBody();
+        } catch (Exception e) {
+            logError(e);
+            tokenExceptionHandler(e);
+            throw e;
+        }
+    }
 
-			tokenRequestDTO.setRequesttime(DateUtils.getUTCCurrentDateTimeString());
-			// tokenRequestDTO.setRequest(setPasswordRequestDTO());
-			tokenRequestDTO.setRequest(setSecretKeyRequestDTO());
-			tokenRequestDTO.setVersion(environment.getProperty("token.request.version"));
+    /**
+     * Performs an HTTP HEAD request to the specified URI.
+     *
+     * @param uri the URI to send the HEAD request to
+     * @return the HTTP status code of the response
+     * @throws Exception if the request fails or an error occurs
+     */
+    public int headApi(URI uri) throws Exception {
+        try {
+            HttpStatusCode httpStatus = localRestTemplate
+                    .exchange(uri, HttpMethod.HEAD, setRequestHeader(null, null), Object.class).getStatusCode();
+            return httpStatus.value();
+        } catch (Exception e) {
+            logError(e);
+            tokenExceptionHandler(e);
+            throw e;
+        }
+    }
 
-			CloseableHttpClient httpClient = HttpClientBuilder.create().build();
-			HttpPost post = new HttpPost(environment.getProperty("KEYBASEDTOKENAPI"));
-			try {
-				StringEntity postingString = new StringEntity(objMp.writeValueAsString(tokenRequestDTO));
-				post.setEntity(postingString);
-				post.setHeader("Content-type", "application/json");
-				post.setHeader(TracingConstant.TRACE_HEADER,
-						(String) ContextualData.getOrDefault(TracingConstant.TRACE_ID_KEY));
-				CloseableHttpResponse response = httpClient.execute(post);
-				org.apache.hc.core5.http.HttpEntity entity = response.getEntity();
-				String responseBody = EntityUtils.toString(entity, "UTF-8");
-				Header[] cookie = response.getHeaders("Set-Cookie");
-				if (cookie.length == 0)
-					throw new TokenGenerationFailedException();
-				token = response.getHeaders("Set-Cookie")[0].getValue();
-				System.setProperty("token", token.substring(14, token.indexOf(';')));
-				return token.substring(0, token.indexOf(';'));
-			} catch (IOException e) {
-				logger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
-						LoggerFileConstant.APPLICATIONID.toString(), e.getMessage() + ExceptionUtils.getStackTrace(e));
-				throw e;
-			} catch (ParseException e) {
-				logger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
-						LoggerFileConstant.APPLICATIONID.toString(), e.getMessage() + ExceptionUtils.getStackTrace(e));
-				throw e;
-			}
-		}
-		return AUTHORIZATION + token;
-	}
+    /**
+     * Performs an HTTP DELETE request to the specified URI.
+     *
+     * @param <T>          the type of the response object
+     * @param uri          the URI to send the DELETE request to
+     * @param responseType the class of the response object
+     * @return the response body deserialized into the specified type
+     * @throws Exception if the request fails or an error occurs
+     */
+    @SuppressWarnings("unchecked")
+    public <T> T deleteApi(URI uri, Class<?> responseType) throws Exception {
+        try {
+            return (T) localRestTemplate.exchange(uri, HttpMethod.DELETE, setRequestHeader(null, null), responseType)
+                    .getBody();
+        } catch (Exception e) {
+            logError(e);
+            tokenExceptionHandler(e);
+            throw e;
+        }
+    }
 
-	private SecretKeyRequest setSecretKeyRequestDTO() {
-		SecretKeyRequest request = new SecretKeyRequest();
-		request.setAppId(environment.getProperty("token.request.appid"));
-		request.setClientId(environment.getProperty("token.request.clientId"));
-		request.setSecretKey(environment.getProperty("token.request.secretKey"));
-		return request;
-	}
+    /**
+     * Retrieves an authentication token from the configured token issuer.
+     * If a valid token exists, it is reused; otherwise, a new token is requested.
+     *
+     * @return the Authorization header value (e.g., "Authorization=Bearer <token>")
+     * @throws IOException if an I/O error occurs during the token request
+     */
+    public String getToken() throws IOException {
+        String currentToken = bearerToken.get();
+        if (StringUtils.isNotEmpty(currentToken) &&
+                TokenHandlerUtil.isValidBearerToken(currentToken, tokenIssuerUrl, tokenClientId)) {
+            return AUTHORIZATION + currentToken;
+        }
 
-	public void tokenExceptionHandler(Exception e) {
-		if (e instanceof HttpStatusCodeException) {
-			HttpStatusCodeException ex = (HttpStatusCodeException) e;
-			if (ex.getRawStatusCode() == 401) {
-				logger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
-						LoggerFileConstant.APPLICATIONID.toString(), "Authentication failed. Resetting auth token.");
-				System.setProperty("token", "");
-			}
-		}
-	}
+        TokenRequestDTO<SecretKeyRequest> tokenRequestDTO = new TokenRequestDTO<>();
+        tokenRequestDTO.setId(tokenId);
+        tokenRequestDTO.setMetadata(new Metadata());
+        tokenRequestDTO.setRequesttime(DateUtils.getUTCCurrentDateTimeString());
+        tokenRequestDTO.setRequest(setSecretKeyRequestDTO());
+        tokenRequestDTO.setVersion(tokenVersion);
 
+        HttpPost post = new HttpPost(tokenApiEndpoint);
+        try {
+            StringEntity postingString = new StringEntity(objMp.writeValueAsString(tokenRequestDTO));
+            post.setEntity(postingString);
+            post.setHeader("Content-type", "application/json");
+            post.setHeader(TracingConstant.TRACE_HEADER,
+                    (String) ContextualData.getOrDefault(TracingConstant.TRACE_ID_KEY));
 
-	public <T> T deleteApi(URI uri, Class<?> responseType) throws Exception {
-		T result = null;
+            HttpClientResponseHandler<String> responseHandler = response -> {
+                try (ClassicHttpResponse httpResponse = response) {
+                    Header[] cookies = httpResponse.getHeaders("Set-Cookie");
+                    if (cookies.length == 0) {
+                        throw new TokenGenerationFailedException();
+                    }
+                    String token = cookies[0].getValue();
+                    return token.substring(14, token.indexOf(';'));
+                }
+            };
 
-		try {
-			result = (T) localRestTemplate.exchange(uri, HttpMethod.DELETE, setRequestHeader(null, null), responseType)
-					.getBody();
-		} catch (Exception e) {
-			logger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
-					LoggerFileConstant.APPLICATIONID.toString(), e.getMessage() + ExceptionUtils.getStackTrace(e));
-			tokenExceptionHandler(e);
-			throw e;
-		}
-		return result;
-	}
+            String newToken = pooledHttpClient.execute(post, responseHandler);
+            bearerToken.compareAndSet(currentToken, newToken);
+            return AUTHORIZATION + newToken;
+        } catch (IOException e) {
+            logError(e);
+            throw e;
+        }
+    }
 
+    /**
+     * Creates a SecretKeyRequest DTO for token requests.
+     *
+     * @return a SecretKeyRequest object with configured app ID, client ID, and secret key
+     */
+    private SecretKeyRequest setSecretKeyRequestDTO() {
+        SecretKeyRequest request = new SecretKeyRequest();
+        request.setAppId(tokenAppId);
+        request.setClientId(tokenClientId);
+        request.setSecretKey(tokenSecretKey);
+        return request;
+    }
 
+    /**
+     * Sets up the HTTP request headers, including the Authorization token and tracing headers.
+     *
+     * @param requestType the request body object (optional)
+     * @param mediaType   the media type of the request body (optional)
+     * @return an HttpEntity containing the headers and optional request body
+     * @throws IOException if an error occurs while retrieving the token
+     */
+    @SuppressWarnings("unchecked")
+    private HttpEntity<Object> setRequestHeader(Object requestType, MediaType mediaType) throws IOException {
+        MultiValueMap<String, String> headers = new LinkedMultiValueMap<>();
+        headers.add(TracingConstant.TRACE_HEADER, (String) ContextualData.getOrDefault(TracingConstant.TRACE_ID_KEY));
+        headers.add("Authorization", getToken());
+        if (mediaType != null) {
+            headers.add("Content-Type", mediaType.toString());
+        }
+
+        if (requestType != null) {
+            try {
+                HttpEntity<Object> httpEntity = (HttpEntity<Object>) requestType;
+                HttpHeaders httpHeader = httpEntity.getHeaders();
+                for (String key : httpHeader.keySet()) {
+                    List<String> values = httpHeader.get(key);
+                    if (values != null && !values.isEmpty() &&
+                            !(headers.containsKey("Content-Type") && key.equalsIgnoreCase("Content-Type"))) {
+                        headers.add(key, values.get(0));
+                    }
+                }
+                return new HttpEntity<>(httpEntity.getBody(), headers);
+            } catch (ClassCastException e) {
+                return new HttpEntity<>(requestType, headers);
+            }
+        }
+        return new HttpEntity<>(headers);
+    }
+
+    /**
+     * Handles exceptions related to token authentication, resetting the token on HTTP 401 errors.
+     *
+     * @param e the exception to handle
+     */
+    public void tokenExceptionHandler(Exception e) {
+        if (e instanceof HttpStatusCodeException ex && ex.getStatusCode().value() == 401) {
+            logger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
+                    LoggerFileConstant.APPLICATIONID.toString(), "Authentication failed. Resetting auth token.");
+            bearerToken.set(null);
+        }
+    }
+
+    /**
+     * Logs an error with session and application IDs, including the exception stack trace.
+     *
+     * @param e the exception to log
+     */
+    private void logError(Exception e) {
+        logger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
+                LoggerFileConstant.APPLICATIONID.toString(), e.getMessage() + ExceptionUtils.getStackTrace(e));
+    }
+
+    /**
+     * Returns the configured RestTemplate instance.
+     *
+     * @return the RestTemplate used for API calls
+     */
+    public RestTemplate getRestTemplate() {
+        return localRestTemplate;
+    }
 }

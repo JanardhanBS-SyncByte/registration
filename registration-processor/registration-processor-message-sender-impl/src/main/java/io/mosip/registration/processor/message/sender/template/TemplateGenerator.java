@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.commons.lang.exception.ExceptionUtils;
 import org.apache.velocity.app.VelocityEngine;
@@ -36,105 +37,99 @@ import io.mosip.registration.processor.core.logger.RegProcessorLogger;
 import io.mosip.registration.processor.core.notification.template.generator.dto.TemplateResponseDto;
 import io.mosip.registration.processor.core.spi.restclient.RegistrationProcessorRestClientService;
 
-/**
- * The Class TemplateGenerator.
- * 
- * @author M1048358 Alok
- */
 @Component
 public class TemplateGenerator {
 
-	/** The reg proc logger. */
-	private static Logger regProcLogger = RegProcessorLogger.getLogger(TemplateGenerator.class);
+    private static final Logger regProcLogger = RegProcessorLogger.getLogger(TemplateGenerator.class);
 
-	/** The resource loader. */
-	private String resourceLoader = "classpath";
+    /** Cache for storing TemplateResponseDto by langCode and templateTypeCode. */
+    private final ConcurrentHashMap<String, TemplateResponseDto> templateCache = new ConcurrentHashMap<>();
 
-	/** The template path. */
-	private String templatePath = ".";
+    /** Singleton TemplateManager instance. */
+    private final TemplateManager templateManager;
 
-	/** The cache. */
-	private boolean cache = Boolean.TRUE;
+    @Autowired
+    private RegistrationProcessorRestClientService<Object> restClientService;
 
-	/** The default encoding. */
-	private String defaultEncoding = StandardCharsets.UTF_8.name();
+    @Autowired
+    private ObjectMapper mapper;
 
-	/** The rest client service. */
-	@Autowired
-	private RegistrationProcessorRestClientService<Object> restClientService;
+    /** Constructor initializes the TemplateManager as a singleton. */
+    public TemplateGenerator() {
+        this.templateManager = initializeTemplateManager();
+    }
 
-	@Autowired
-	private ObjectMapper mapper;
+    private TemplateManager initializeTemplateManager() {
+        Properties props = new Properties();
+        props.put(RuntimeConstants.INPUT_ENCODING, StandardCharsets.UTF_8.name());
+        props.put(RuntimeConstants.OUTPUT_ENCODING, StandardCharsets.UTF_8.name());
+        props.put(RuntimeConstants.ENCODING_DEFAULT, StandardCharsets.UTF_8.name());
+        props.put(RuntimeConstants.RESOURCE_LOADER, "classpath");
+        props.put(RuntimeConstants.FILE_RESOURCE_LOADER_PATH, ".");
+        props.put(RuntimeConstants.FILE_RESOURCE_LOADER_CACHE, true);
+        props.put(RuntimeConstants.RUNTIME_LOG_LOGSYSTEM_CLASS, NullLogChute.class.getName());
+        props.put("classpath.resource.loader.class", ClasspathResourceLoader.class.getName());
+        props.put("file.resource.loader.class", FileResourceLoader.class.getName());
 
-	/**
-	 * Gets the template.
-	 *
-	 * @param templateTypeCode
-	 *            the template type code
-	 * @param attributes
-	 *            the attributes
-	 * @param langCode
-	 *            the lang code
-	 * @return the template
-	 * @throws IOException
-	 *             Signals that an I/O exception has occurred.
-	 * @throws ApisResourceAccessException
-	 *             the apis resource access exception
-	 */
-	public InputStream getTemplate(String templateTypeCode, Map<String, Object> attributes, String langCode)
-			throws IOException, ApisResourceAccessException {
+        VelocityEngine engine = new VelocityEngine(props);
+        engine.init();
+        return new TemplateManagerImpl(engine);
+    }
 
-		ResponseWrapper<?> responseWrapper;
-		TemplateResponseDto template;
-		regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.USERID.toString(), "",
-				"TemplateGenerator::getTemplate()::entry");
+    private String getCacheKey(String langCode, String templateTypeCode) {
+        return langCode + "_" + templateTypeCode;
+    }
 
-		try {
-			List<String> pathSegments = new ArrayList<>();
-			pathSegments.add(langCode);
-			pathSegments.add(templateTypeCode);
+    /**
+     * Fetch and merge the template with provided attributes.
+     *
+     * @param templateTypeCode The template type
+     * @param attributes       Template merge variables
+     * @param langCode         Language code
+     * @return Merged template content as InputStream
+     * @throws IOException
+     * @throws ApisResourceAccessException
+     */
+    public InputStream getTemplate(String templateTypeCode, Map<String, Object> attributes, String langCode)
+            throws IOException, ApisResourceAccessException {
 
-			responseWrapper = (ResponseWrapper<?>) restClientService.getApi(ApiName.TEMPLATES, pathSegments, "", "",
-					ResponseWrapper.class);
-			template = mapper.readValue(mapper.writeValueAsString(responseWrapper.getResponse()),
-					TemplateResponseDto.class);
+        String cacheKey = getCacheKey(langCode, templateTypeCode);
+        TemplateResponseDto template = templateCache.get(cacheKey);
 
-			InputStream fileTextStream = null;
-			if (template != null) {
-				InputStream stream = new ByteArrayInputStream(
-						template.getTemplates().iterator().next().getFileText().getBytes());
-				fileTextStream = getTemplateManager().merge(stream, attributes);
-			}
-			regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.USERID.toString(), "",
-					"TemplateGenerator::getTemplate()::exit");
-			return fileTextStream;
+        try {
+            regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.USERID.toString(), "",
+                    "TemplateGenerator::getTemplate()::entry");
 
-		} catch (TemplateResourceNotFoundException | TemplateParsingException | TemplateMethodInvocationException e) {
-			regProcLogger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.REGISTRATIONID.toString(),
-					null, PlatformErrorMessages.RPR_TEM_PROCESSING_FAILURE.name() + e.getMessage()
-							+ ExceptionUtils.getStackTrace(e));
-			throw new TemplateProcessingFailureException(PlatformErrorMessages.RPR_TEM_PROCESSING_FAILURE.getCode());
-		}
-	}
+            if (template == null) {
+                List<String> pathSegments = new ArrayList<>();
+                pathSegments.add(langCode);
+                pathSegments.add(templateTypeCode);
 
-	/**
-	 * Gets the template manager.
-	 *
-	 * @return the template manager
-	 */
-	public TemplateManager getTemplateManager() {
-		final Properties properties = new Properties();
-		properties.put(RuntimeConstants.INPUT_ENCODING, defaultEncoding);
-		properties.put(RuntimeConstants.OUTPUT_ENCODING, defaultEncoding);
-		properties.put(RuntimeConstants.ENCODING_DEFAULT, defaultEncoding);
-		properties.put(RuntimeConstants.RESOURCE_LOADER, resourceLoader);
-		properties.put(RuntimeConstants.FILE_RESOURCE_LOADER_PATH, templatePath);
-		properties.put(RuntimeConstants.FILE_RESOURCE_LOADER_CACHE, cache);
-		properties.put(RuntimeConstants.RUNTIME_LOG_LOGSYSTEM_CLASS, NullLogChute.class.getName());
-		properties.put("classpath.resource.loader.class", ClasspathResourceLoader.class.getName());
-		properties.put("file.resource.loader.class", FileResourceLoader.class.getName());
-		VelocityEngine engine = new VelocityEngine(properties);
-		engine.init();
-		return new TemplateManagerImpl(engine);
-	}
+                ResponseWrapper<?> responseWrapper = (ResponseWrapper<?>) restClientService.getApi(ApiName.TEMPLATES,
+                        pathSegments, "", "", ResponseWrapper.class);
+
+                template = mapper.readValue(mapper.writeValueAsString(responseWrapper.getResponse()),
+                        TemplateResponseDto.class);
+                templateCache.putIfAbsent(cacheKey, template);
+            }
+
+            if (template != null && !template.getTemplates().isEmpty()) {
+                InputStream stream = new ByteArrayInputStream(
+                        template.getTemplates().iterator().next().getFileText().getBytes(StandardCharsets.UTF_8));
+                InputStream resultStream = templateManager.merge(stream, attributes);
+
+                regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.USERID.toString(), "",
+                        "TemplateGenerator::getTemplate()::exit");
+                return resultStream;
+            } else {
+                throw new TemplateProcessingFailureException(PlatformErrorMessages.RPR_TEM_PROCESSING_FAILURE.getCode());
+            }
+
+        } catch (TemplateResourceNotFoundException | TemplateParsingException | TemplateMethodInvocationException e) {
+            regProcLogger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.REGISTRATIONID.toString(),
+                    null, PlatformErrorMessages.RPR_TEM_PROCESSING_FAILURE.name() + e.getMessage()
+                            + ExceptionUtils.getStackTrace(e));
+            throw new TemplateProcessingFailureException(PlatformErrorMessages.RPR_TEM_PROCESSING_FAILURE.getCode());
+        }
+    }
 }

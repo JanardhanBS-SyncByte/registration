@@ -6,6 +6,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 
 import io.mosip.kernel.core.exception.ExceptionUtils;
@@ -65,16 +66,27 @@ public class AuditUtility {
 	/**
 	 * Save the audit Details.
 	 *
-	 * @param registrationId
-	 *            the registrationId
+	 * @param registrationId the registrationId
 	 * 
 	 *
 	 */
 	public void saveAuditDetails(String registrationId, String process) {
+		regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.REGISTRATIONID.toString(), "",
+				"AuditUtility::saveAuditDetails()::entry");
+
 		try {
-			regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.REGISTRATIONID.toString(),
-					"", "AuditUtility::saveAuditDetails()::entry");
-			List<FieldResponseDto> audits = packetManagerService.getAudits(registrationId, process, ProviderStageName.PACKET_VALIDATOR);
+			List<FieldResponseDto> audits = packetManagerService.getAudits(registrationId, process,
+					ProviderStageName.PACKET_VALIDATOR);
+
+			if (CollectionUtils.isEmpty(audits)) {
+				regProcLogger.info(LoggerFileConstant.SESSIONID.toString(),
+						LoggerFileConstant.REGISTRATIONID.toString(), "",
+						"AuditUtility::saveAuditDetails()::empty:No audit records found for registrationId");
+				return;
+			}
+
+			audits.forEach(audit -> CompletableFuture.runAsync(() -> sendAuditRequest(audit, registrationId)));
+
 			if (CollectionUtils.isNotEmpty(audits)) {
 				audits.parallelStream().forEach(audit -> {
 					AsyncRequestDTO request = buildRequest(audit);
@@ -84,20 +96,38 @@ public class AuditUtility {
 			}
 		} catch (RuntimeException e) {
 			regProcLogger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.REGISTRATIONID.toString(),
-					registrationId, "AuditUtility::saveAuditDetails::Runtime exception occurred " + ExceptionUtils.getStackTrace(e));
+					registrationId,
+					"AuditUtility::saveAuditDetails::Runtime exception occurred " + ExceptionUtils.getStackTrace(e));
 
 		} catch (Exception e) {
 			regProcLogger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.REGISTRATIONID.toString(),
-					registrationId, "AuditUtility::saveAuditDetails::Exception occurred " + ExceptionUtils.getStackTrace(e));
+					registrationId,
+					"AuditUtility::saveAuditDetails::Exception occurred " + ExceptionUtils.getStackTrace(e));
 		}
-
 	}
+
+	private void sendAuditRequest(FieldResponseDto audit, String registrationId) {
+        try {
+            AsyncRequestDTO request = buildRequest(audit);
+            Supplier<Object> supplier = restHelper.requestAsync(request);
+            Object response = supplier.get();
+
+            if (response == null) {
+    			regProcLogger.info(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.REGISTRATIONID.toString(),
+    					registrationId,
+    					"AuditUtility::sendAuditRequest::Runtime exception occurred::No response received for audit request, registrationId");
+            }
+        } catch (Exception e) {
+			regProcLogger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.REGISTRATIONID.toString(),
+					registrationId,
+					"AuditUtility::sendAuditRequest::Exception occurred " + ExceptionUtils.getStackTrace(e));
+        }
+    }
 
 	/**
 	 * Builds the request.
 	 *
-	 * @param req
-	 *            the request body
+	 * @param req the request body
 	 * @return the Async request DTO
 	 *
 	 */
@@ -105,22 +135,21 @@ public class AuditUtility {
 		RequestWrapper<Map<String, String>> auditRequest = new RequestWrapper<>();
 
 		auditRequest.setRequest(req.getFields());
-		auditRequest.setId("String");
+		auditRequest.setId(UUID.randomUUID().toString()); // Unique ID
 		auditRequest.setVersion("1.0");
 		auditRequest.setRequesttime(LocalDateTime.now());
-		AsyncRequestDTO request = new AsyncRequestDTO();
 
+		AsyncRequestDTO request = new AsyncRequestDTO();
 		request.setUri(env.getProperty(PacketFiles.AUDIT.name()));
 		request.setHttpMethod(HttpMethod.POST);
+
 		HttpHeaders headers = new HttpHeaders();
 		headers.setContentType(MediaType.APPLICATION_JSON);
-		request.setHeaders(headers);
-		
 
+		request.setHeaders(headers);
 		request.setRequestBody(auditRequest);
 		request.setResponseType(AuditRespDTO.class);
 
 		return request;
 	}
-	 
 }

@@ -12,27 +12,20 @@ import io.mosip.registration.processor.core.exception.ApisResourceAccessExceptio
  * The Interface RegistrationProcessorRestClientService.
  *
  * @author Rishabh Keshari
- * @param <T>
- *            the generic type
+ * @param <T> the generic type
  */
-	public interface RegistrationProcessorRestClientService<T> {
+public interface RegistrationProcessorRestClientService<T> {
 
 	/**
 	 * Gets the api.
 	 *
-	 * @param apiName
-	 *            the api name
-	 * @param pathsegments
-	 *            pathsegments of the uri
-	 * @param queryParam
-	 *            the query param
-	 * @param queryParamValue
-	 *            the query param value
-	 * @param responseType
-	 *            the response type
+	 * @param apiName         the api name
+	 * @param pathsegments    pathsegments of the uri
+	 * @param queryParam      the query param
+	 * @param queryParamValue the query param value
+	 * @param responseType    the response type
 	 * @return the api
-	 * @throws ApisResourceAccessException
-	 *             the apis resource access exception
+	 * @throws ApisResourceAccessException the apis resource access exception
 	 */
 	public T getApi(ApiName apiName, List<String> pathsegments, String queryParam, String queryParamValue,
 			Class<?> responseType) throws ApisResourceAccessException;
@@ -40,33 +33,27 @@ import io.mosip.registration.processor.core.exception.ApisResourceAccessExceptio
 	/**
 	 * Gets the api.
 	 *
-	 * @param apiName the api name
-	 * @param pathsegments the pathsegments
-	 * @param queryParam the query param
+	 * @param apiName         the api name
+	 * @param pathsegments    the pathsegments
+	 * @param queryParam      the query param
 	 * @param queryParamValue the query param value
-	 * @param responseType the response type
+	 * @param responseType    the response type
 	 * @return the api
 	 * @throws ApisResourceAccessException the apis resource access exception
 	 */
 	public T getApi(ApiName apiName, List<String> pathsegments, List<String> queryParam, List<Object> queryParamValue,
-					Class<?> responseType) throws ApisResourceAccessException;
+			Class<?> responseType) throws ApisResourceAccessException;
 
 	/**
 	 * Post api.
 	 *
-	 * @param apiName
-	 *            the api name
-	 * @param queryParam
-	 *            the query param
-	 * @param queryParamValue
-	 *            the query param value
-	 * @param requestedData
-	 *            the requested data
-	 * @param responseType
-	 *            the response type
+	 * @param apiName         the api name
+	 * @param queryParam      the query param
+	 * @param queryParamValue the query param value
+	 * @param requestedData   the requested data
+	 * @param responseType    the response type
 	 * @return the t
-	 * @throws ApisResourceAccessException
-	 *             the apis resource access exception
+	 * @throws ApisResourceAccessException the apis resource access exception
 	 */
 	public T postApi(ApiName apiName, String queryParam, String queryParamValue, T requestedData, Class<?> responseType)
 			throws ApisResourceAccessException;
@@ -74,43 +61,30 @@ import io.mosip.registration.processor.core.exception.ApisResourceAccessExceptio
 	/**
 	 * Post api.
 	 *
-	 * @param apiName
-	 *            the api name
-	 * @param queryParamName
-	 *            the query param
-	 * @param queryParamValue
-	 *            the query param value
-	 * @param requestedData
-	 *            the requested data
-	 * @param responseType
-	 *            the response type
-	 * @param mediaType
-	 * 			  the content type    
-	 *        
+	 * @param apiName         the api name
+	 * @param queryParamName  the query param
+	 * @param queryParamValue the query param value
+	 * @param requestedData   the requested data
+	 * @param responseType    the response type
+	 * @param mediaType       the content type
+	 * 
 	 * @return the t
-	 * @throws ApisResourceAccessException
-	 *             the apis resource access exception
+	 * @throws ApisResourceAccessException the apis resource access exception
 	 */
 	public T postApi(ApiName apiName, String queryParamName, String queryParamValue, T requestedData,
-			Class<?> responseType, MediaType mediaType) throws ApisResourceAccessException ;
+			Class<?> responseType, MediaType mediaType) throws ApisResourceAccessException;
+
 	/**
 	 * Post api.
 	 *
-	 * @param apiName
-	 *            the api name
-	 * @param pathsegments
-	 *            the pathsegments
-	 * @param queryParam
-	 *            the query param
-	 * @param queryParamValue
-	 *            the query param value
-	 * @param requestedData
-	 *            the requested data
-	 * @param responseType
-	 *            the response type
+	 * @param apiName         the api name
+	 * @param pathsegments    the pathsegments
+	 * @param queryParam      the query param
+	 * @param queryParamValue the query param value
+	 * @param requestedData   the requested data
+	 * @param responseType    the response type
 	 * @return the t
-	 * @throws ApisResourceAccessException
-	 *             the apis resource access exception
+	 * @throws ApisResourceAccessException the apis resource access exception
 	 */
 
 	public T postApi(ApiName apiName, List<String> pathsegments, String queryParam, String queryParamValue,
@@ -119,37 +93,30 @@ import io.mosip.registration.processor.core.exception.ApisResourceAccessExceptio
 	/**
 	 * Post Api.
 	 *
-	 * @param apiName the api name
-	 * @param mediaType the media type
-	 * @param pathsegments the pathsegments
-	 * @param queryParam the query param
+	 * @param apiName         the api name
+	 * @param mediaType       the media type
+	 * @param pathsegments    the pathsegments
+	 * @param queryParam      the query param
 	 * @param queryParamValue the query param value
-	 * @param requestedData the requested data
-	 * @param responseType the response type
+	 * @param requestedData   the requested data
+	 * @param responseType    the response type
 	 * @return the t
 	 * @throws ApisResourceAccessException the apis resource access exception
 	 */
-	public T postApi(ApiName apiName, MediaType mediaType, List<String> pathsegments, List<String> queryParam, List<Object> queryParamValue,
-					 T requestedData, Class<?> responseType) throws ApisResourceAccessException;
+	public T postApi(ApiName apiName, MediaType mediaType, List<String> pathsegments, List<String> queryParam,
+			List<Object> queryParamValue, T requestedData, Class<?> responseType) throws ApisResourceAccessException;
 
 	/**
 	 * Patch api.
 	 *
-	 * @param apiName
-	 *            the api name
-	 * @param pathsegments
-	 *            the pathsegments
-	 * @param queryParam
-	 *            the query param
-	 * @param queryParamValue
-	 *            the query param value
-	 * @param requestedData
-	 *            the requested data
-	 * @param responseType
-	 *            the response type
+	 * @param apiName         the api name
+	 * @param pathsegments    the pathsegments
+	 * @param queryParam      the query param
+	 * @param queryParamValue the query param value
+	 * @param requestedData   the requested data
+	 * @param responseType    the response type
 	 * @return the t
-	 * @throws ApisResourceAccessException
-	 *             the apis resource access exception
+	 * @throws ApisResourceAccessException the apis resource access exception
 	 */
 	public T patchApi(ApiName apiName, List<String> pathsegments, String queryParam, String queryParamValue,
 			T requestedData, Class<?> responseType) throws ApisResourceAccessException;
@@ -157,37 +124,38 @@ import io.mosip.registration.processor.core.exception.ApisResourceAccessExceptio
 	/**
 	 * Put api.
 	 *
-	 * @param apiName the api name
-	 * @param pathsegments the pathsegments
-	 * @param queryParam the query param
+	 * @param apiName         the api name
+	 * @param pathsegments    the pathsegments
+	 * @param queryParam      the query param
 	 * @param queryParamValue the query param value
-	 * @param requestedData the requested data
-	 * @param responseType the response type
-	 * @param mediaType the media type
+	 * @param requestedData   the requested data
+	 * @param responseType    the response type
+	 * @param mediaType       the media type
 	 * @return the t
 	 * @throws ApisResourceAccessException the apis resource access exception
 	 */
 	public T putApi(ApiName apiName, List<String> pathsegments, String queryParam, String queryParamValue,
-			T requestedData, Class<?> responseType,MediaType mediaType) throws ApisResourceAccessException;
-	
+			T requestedData, Class<?> responseType, MediaType mediaType) throws ApisResourceAccessException;
+
 	/**
 	 * Post api.
 	 *
-	 * @param url the url
-	 * @param mediaType the media type
-	 * @param pathsegments the pathsegments
-	 * @param queryParam the query param
+	 * @param url             the url
+	 * @param mediaType       the media type
+	 * @param pathsegments    the pathsegments
+	 * @param queryParam      the query param
 	 * @param queryParamValue the query param value
-	 * @param requestedData the requested data
-	 * @param responseType the response type
+	 * @param requestedData   the requested data
+	 * @param responseType    the response type
 	 * @return the t
 	 * @throws ApisResourceAccessException the apis resource access exception
 	 */
-	public T postApi(String url, MediaType mediaType, List<String> pathsegments, List<String> queryParam, List<Object> queryParamValue,
-			 T requestedData, Class<?> responseType) throws ApisResourceAccessException;
+	public T postApi(String url, MediaType mediaType, List<String> pathsegments, List<String> queryParam,
+			List<Object> queryParamValue, T requestedData, Class<?> responseType) throws ApisResourceAccessException;
 
-	public Integer headApi(ApiName apiName, List<String> pathsegments, List<String> queryParamName, List<Object> queryParamValue) throws ApisResourceAccessException;
+	public Integer headApi(ApiName apiName, List<String> pathsegments, List<String> queryParamName,
+			List<Object> queryParamValue) throws ApisResourceAccessException;
 
 	public T deleteApi(ApiName apiName, List<String> pathsegments, String queryParam, String queryParamValue,
-					Class<?> responseType) throws ApisResourceAccessException;
-	}
+			Class<?> responseType) throws ApisResourceAccessException;
+}

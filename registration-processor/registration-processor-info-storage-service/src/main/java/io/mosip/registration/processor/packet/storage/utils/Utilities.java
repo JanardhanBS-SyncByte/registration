@@ -1,65 +1,58 @@
 package io.mosip.registration.processor.packet.storage.utils;
 
 import java.io.IOException;
-import java.text.DateFormat;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
+import java.net.URI;
 import java.time.Duration;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.Period;
 import java.util.ArrayList;
-import java.util.Date;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.commons.lang.StringUtils;
+import org.cache2k.Cache;
+import org.cache2k.Cache2kBuilder;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.RestTemplate;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import io.mosip.kernel.core.exception.ExceptionUtils;
 import io.mosip.kernel.core.logger.spi.Logger;
-import io.mosip.kernel.core.util.exception.JsonProcessingException;
 import io.mosip.registration.processor.abis.queue.dto.AbisQueueDetails;
 import io.mosip.registration.processor.core.code.ApiName;
 import io.mosip.registration.processor.core.common.rest.dto.ErrorDTO;
 import io.mosip.registration.processor.core.constant.LoggerFileConstant;
-import io.mosip.registration.processor.core.constant.MappingJsonConstants;
-import io.mosip.registration.processor.core.constant.ProviderStageName;
 import io.mosip.registration.processor.core.exception.ApisResourceAccessException;
-import io.mosip.registration.processor.core.exception.PacketManagerException;
 import io.mosip.registration.processor.core.exception.RegistrationProcessorCheckedException;
 import io.mosip.registration.processor.core.exception.RegistrationProcessorUnCheckedException;
 import io.mosip.registration.processor.core.exception.util.PlatformErrorMessages;
 import io.mosip.registration.processor.core.idrepo.dto.IdResponseDTO1;
 import io.mosip.registration.processor.core.idrepo.dto.ResponseDTO;
 import io.mosip.registration.processor.core.logger.RegProcessorLogger;
-import io.mosip.registration.processor.core.packet.dto.Identity;
 import io.mosip.registration.processor.core.packet.dto.vid.VidResponseDTO;
 import io.mosip.registration.processor.core.queue.factory.MosipQueue;
-import io.mosip.registration.processor.core.spi.packetmanager.PacketInfoManager;
 import io.mosip.registration.processor.core.spi.queue.MosipQueueConnectionFactory;
 import io.mosip.registration.processor.core.spi.restclient.RegistrationProcessorRestClientService;
 import io.mosip.registration.processor.core.util.JsonUtil;
 import io.mosip.registration.processor.packet.manager.idreposervice.IdRepoService;
-import io.mosip.registration.processor.packet.storage.dao.PacketInfoDao;
-import io.mosip.registration.processor.packet.storage.dto.ApplicantInfoDto;
 import io.mosip.registration.processor.packet.storage.dto.ConfigEnum;
 import io.mosip.registration.processor.packet.storage.exception.IdRepoAppException;
-import io.mosip.registration.processor.packet.storage.exception.ParsingException;
 import io.mosip.registration.processor.packet.storage.exception.QueueConnectionNotFound;
 import io.mosip.registration.processor.packet.storage.exception.VidCreationException;
+import io.mosip.registration.processor.rest.client.utils.RestApiClient;
 import io.mosip.registration.processor.status.dao.RegistrationStatusDao;
 import io.mosip.registration.processor.status.dto.InternalRegistrationStatusDto;
 import io.mosip.registration.processor.status.entity.RegistrationStatusEntity;
+import jakarta.annotation.PostConstruct;
 import lombok.Data;
 
 /**
@@ -80,9 +73,6 @@ public class Utilities {
 	private static final String PROCESS = "process";
 	private static final String PROVIDER = "provider";
 
-	private static Map<String, String> readerConfiguration;
-	private static Map<String, String> writerConfiguration;
-
 	/** The Constant UIN. */
 	private static final String UIN = "UIN";
 
@@ -98,25 +88,46 @@ public class Utilities {
 	/** The Constant NEW_PACKET. */
 	private static final String NEW_PACKET = "New-packet";
 
+	/** The Constant INBOUNDQUEUENAME. */
+	private static final String INBOUNDQUEUENAME = "inboundQueueName";
+
+	/** The Constant OUTBOUNDQUEUENAME. */
+	private static final String OUTBOUNDQUEUENAME = "outboundQueueName";
+
+	/** The Constant ABIS. */
+	private static final String ABIS = "abis";
+
+	/** The Constant USERNAME. */
+	private static final String USERNAME = "userName";
+
+	/** The Constant PASSWORD. */
+	private static final String PASSWORD = "password";
+
+	/** The Constant BROKERURL. */
+	private static final String BROKERURL = "brokerUrl";
+
+	/** The Constant TYPEOFQUEUE. */
+	private static final String TYPEOFQUEUE = "typeOfQueue";
+
+	/** The Constant NAME. */
+	private static final String NAME = "name";
+
+	/** The Constant NAME. */
+	private static final String INBOUNDMESSAGETTL = "inboundMessageTTL";
+
+	/** The Constant FAIL_OVER. */
+	private static final String FAIL_OVER = "failover:(";
+
+	/** The Constant RANDOMIZE_FALSE. */
+	private static final String RANDOMIZE_FALSE = ")?randomize=false";
+
+	private static final String VALUE = "value";
+
 	@Value("${mosip.kernel.machineid.length}")
 	private int machineIdLength;
 
 	@Value("${mosip.kernel.registrationcenterid.length}")
 	private int centerIdLength;
-
-	@Autowired
-	private ObjectMapper objMapper;
-
-	@Autowired
-	private IdRepoService idRepoService;
-
-	/** The rest client service. */
-	@Autowired
-	private RegistrationProcessorRestClientService<Object> restClientService;
-
-	/** The mosip connection factory. */
-	@Autowired
-	private MosipQueueConnectionFactory<MosipQueue> mosipConnectionFactory;
 
 	@Value("${provider.packetreader.mosip}")
 	private String provider;
@@ -156,48 +167,43 @@ public class Utilities {
 	@Value("#{'${registration.processor.queue.trusted.packages}'.split(',')}")
 	private List<String> trustedPackages;
 
+	private static final ConcurrentHashMap<String, JSONObject> jsonCache = new ConcurrentHashMap<>();
+	private static final ConcurrentHashMap<String, String> sourceCache = new ConcurrentHashMap<>();
+	private static final Cache<String, String> transactionIdCache = new Cache2kBuilder<String, String>() {
+	}.expireAfterWrite(10, TimeUnit.MINUTES) // 10 minutes TTL
+			.entryCapacity(10_000) // Maximum 10,000 entries
+			.build();
+
+	@Autowired
+	private ObjectMapper objMapper;
+
+	@Autowired
+	private IdRepoService idRepoService;
+
+	/** The rest client service. */
+	@Autowired
+	private RegistrationProcessorRestClientService<Object> restClientService;
+
+	/** The mosip connection factory. */
+	@Autowired
+	private MosipQueueConnectionFactory<MosipQueue> mosipConnectionFactory;
+
 	/** The registration status dao. */
 	@Autowired
 	private RegistrationStatusDao registrationStatusDao;
 
-	/** The Constant INBOUNDQUEUENAME. */
-	private static final String INBOUNDQUEUENAME = "inboundQueueName";
+	private static Map<String, String> readerConfiguration;
+	private static Map<String, String> writerConfiguration;
 
-	/** The Constant OUTBOUNDQUEUENAME. */
-	private static final String OUTBOUNDQUEUENAME = "outboundQueueName";
+	@Autowired
+	private RestApiClient restApiClient;
 
-	/** The Constant ABIS. */
-	private static final String ABIS = "abis";
+	private static RestApiClient staticRestApiClient;
 
-	/** The Constant USERNAME. */
-	private static final String USERNAME = "userName";
-
-	/** The Constant PASSWORD. */
-	private static final String PASSWORD = "password";
-
-	/** The Constant BROKERURL. */
-	private static final String BROKERURL = "brokerUrl";
-
-	/** The Constant TYPEOFQUEUE. */
-	private static final String TYPEOFQUEUE = "typeOfQueue";
-
-	/** The Constant NAME. */
-	private static final String NAME = "name";
-
-	/** The Constant NAME. */
-	private static final String INBOUNDMESSAGETTL = "inboundMessageTTL";
-
-	/** The Constant FAIL_OVER. */
-	private static final String FAIL_OVER = "failover:(";
-
-	/** The Constant RANDOMIZE_FALSE. */
-	private static final String RANDOMIZE_FALSE = ")?randomize=false";
-
-	private static final String VALUE = "value";
-
-	private JSONObject mappingJsonObject = null;
-
-	private JSONObject regProcessorAbisJson = null;
+	@PostConstruct
+	public void initRestTemplate() {
+		staticRestApiClient = restApiClient;
+	}
 
 	public static void initialize(Map<String, String> reader, Map<String, String> writer) {
 		readerConfiguration = reader;
@@ -211,29 +217,32 @@ public class Utilities {
 	 * @param uri                        the uri
 	 * @return the json
 	 */
-	public static String getJson(String configServerFileStorageURL, String uri) {
-		RestTemplate restTemplate = new RestTemplate();
-		return restTemplate.getForObject(configServerFileStorageURL + uri, String.class);
+	public static String getJson(String configServerFileStorageURL, String uri) throws IOException {
+		if (staticRestApiClient == null) {
+			throw new IllegalStateException("RestApiClient not initialized. Ensure Spring context is properly loaded.");
+		}
+		try {
+			return staticRestApiClient.getApi(URI.create(configServerFileStorageURL + uri), String.class);
+		} catch (Exception e) {
+			regProcLogger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.APPLICATIONID.toString(),
+					LoggerFileConstant.APPLICATIONID.toString(),
+					"Failed to fetch JSON from " + uri + ": " + ExceptionUtils.getStackTrace(e));
+			throw new IOException("Failed to fetch JSON from " + uri, e);
+		}
 	}
 
-
-
 	public String getDefaultSource(String process, ConfigEnum config) {
-		Map<String, String> configMap = null;
-		if (config.equals(ConfigEnum.READER))
-			configMap = readerConfiguration;
-		else if (config.equals(ConfigEnum.WRITER))
-			configMap = writerConfiguration;
+		Map<String, String> configMap = config.equals(ConfigEnum.READER) ? readerConfiguration : writerConfiguration;
 
 		if (configMap != null) {
 			for (Map.Entry<String, String> entry : configMap.entrySet()) {
 				String[] values = entry.getValue().split(",");
 				String source = null;
 				for (String val : values) {
-					if (val.startsWith("process:") && val.contains(process))
+					if (val.startsWith(PROCESS + ":") && val.contains(process))
 						for (String sVal : values) {
-							if (sVal.startsWith("source:")) {
-								source = sVal.replace("source:", "");
+							if (sVal.startsWith(SOURCE + ":")) {
+								source = sVal.replace(SOURCE + ":", "");
 								return source;
 							}
 						}
@@ -244,39 +253,44 @@ public class Utilities {
 	}
 
 	public String getSource(String packetSegment, String process, String field) throws IOException {
-		String source = null;
-		JSONObject jsonObject = getRegistrationProcessorMappingJson(packetSegment);
-		Object obj = field == null ? jsonObject.get(PROVIDER) : getField(jsonObject, field);
-		if (obj != null && obj instanceof ArrayList) {
-			List<String> providerList = (List) obj;
-			for (String value : providerList) {
-				String[] values = value.split(",");
-				for (String provider : values) {
-					if (provider != null) {
-						if (provider.startsWith(PROCESS) && provider.contains(process)) {
-							for (String val : values) {
-								if (val.startsWith(SOURCE)) {
-									return val.replace(SOURCE + ":", "").trim();
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-
-		return source;
-	}
+        String cacheKey = packetSegment + "_" + process + "_" + (field != null ? field : "default");
+        return sourceCache.computeIfAbsent(cacheKey, k -> {
+            try {
+                JSONObject jsonObject = getRegistrationProcessorMappingJson(packetSegment);
+                Object obj = field == null ? jsonObject.get(PROVIDER) : ((Map) jsonObject.get(field)).get(PROVIDER);
+                if (obj instanceof List) {
+                    Set<String> providerSet = new HashSet<>((List<String>) obj);
+                    for (String value : providerSet) {
+                        String[] values = value.split(",");
+                        for (String val : values) {
+                            if (val.startsWith(PROCESS) && val.contains(process)) {
+                                for (String v : values) {
+                                    if (v.startsWith(SOURCE)) {
+                                        return v.replace(SOURCE + ":", "").trim();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return null;
+            } catch (IOException e) {
+                throw new RegistrationProcessorUnCheckedException(
+                        PlatformErrorMessages.RPR_SYS_IO_EXCEPTION.getCode(),
+                        PlatformErrorMessages.RPR_SYS_IO_EXCEPTION.getMessage(), e);
+            }
+        });
+    }
 
 	private Object getField(JSONObject jsonObject, String field) {
-		LinkedHashMap lm = (LinkedHashMap) jsonObject.get(field);
+		LinkedHashMap<?, ?> lm = (LinkedHashMap<?, ?>) jsonObject.get(field);
 		return lm.get(PROVIDER);
 	}
 
 	public String getSourceFromIdField(String packetSegment, String process, String idField) throws IOException {
 		JSONObject jsonObject = getRegistrationProcessorMappingJson(packetSegment);
 		for (Object key : jsonObject.keySet()) {
-			LinkedHashMap hMap = (LinkedHashMap) jsonObject.get(key);
+			LinkedHashMap<?, ?> hMap = (LinkedHashMap<?, ?>) jsonObject.get(key);
 			String value = (String) hMap.get(VALUE);
 			if (value != null && value.contains(idField)) {
 				return getSource(packetSegment, process, key.toString());
@@ -297,35 +311,34 @@ public class Utilities {
 	 */
 	private ResponseDTO retrieveIdrepoResponseObj(String uin, String queryParam, String queryParamValue)
 			throws ApisResourceAccessException {
-		if (uin != null) {
+		if (uin == null)
+			return null;
+
+		regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
+				"Utilities::retrieveIdrepoResponseObj()::entry");
+		List<String> pathSegments = new ArrayList<>();
+		pathSegments.add(uin);
+
+		IdResponseDTO1 idResponseDto = (IdResponseDTO1) restClientService.getApi(ApiName.IDREPOGETIDBYUIN, pathSegments,
+				queryParam == null ? "" : queryParam, queryParamValue == null ? "" : queryParamValue,
+				IdResponseDTO1.class);
+
+		regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
+				"Utilities::retrieveIdrepoDocument():: IDREPOGETIDBYUIN GET service call ended Successfully");
+
+		if (idResponseDto == null) {
 			regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
-					"Utilities::retrieveIdrepoResponseObj()::entry");
-			List<String> pathSegments = new ArrayList<>();
-			pathSegments.add(uin);
-			IdResponseDTO1 idResponseDto;
-
-			idResponseDto = (IdResponseDTO1) restClientService.getApi(ApiName.IDREPOGETIDBYUIN, pathSegments,
-					null == queryParam ? "" : queryParam, null == queryParamValue ? "" : queryParamValue,
-					IdResponseDTO1.class);
-			regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
-					"Utilities::retrieveIdrepoDocument():: IDREPOGETIDBYUIN GET service call ended Successfully");
-
-			if (idResponseDto == null) {
-				regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
-						"Utilities::retrieveIdrepoResponseObj()::exit idResponseDto is null");
-				return null;
-			}
-			if (!idResponseDto.getErrors().isEmpty()) {
-				List<ErrorDTO> error = idResponseDto.getErrors();
-				regProcLogger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
-						"Utilities::retrieveIdrepoResponseObj():: error with error message "
-								+ error.get(0).getMessage());
-				throw new IdRepoAppException(error.get(0).getMessage());
-			}
-
-			return idResponseDto.getResponse();
+					"Utilities::retrieveIdrepoResponseObj()::exit idResponseDto is null");
+			return null;
 		}
-		return null;
+		if (!idResponseDto.getErrors().isEmpty()) {
+			List<ErrorDTO> error = idResponseDto.getErrors();
+			regProcLogger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
+					"Utilities::retrieveIdrepoResponseObj():: error with error message " + error.get(0).getMessage());
+			throw new IdRepoAppException(error.get(0).getMessage());
+		}
+
+		return idResponseDto.getResponse();
 	}
 
 	/**
@@ -340,25 +353,24 @@ public class Utilities {
 	 */
 	public JSONObject retrieveIdrepoJson(String uin)
 			throws ApisResourceAccessException, IdRepoAppException, IOException {
+		if (uin == null)
+			return null;
 
-		if (uin != null) {
-			ResponseDTO idResponseDto = retrieveIdrepoResponseObj(uin, null, null);
-			if (idResponseDto != null) {
+		ResponseDTO idResponseDto = retrieveIdrepoResponseObj(uin, null, null);
+		if (idResponseDto != null) {
+			regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
+					"Utilities::retrieveIdrepoJson():: IDREPOGETIDBYUIN GET service call ended Successfully");
+			try {
 				String response = objMapper.writeValueAsString(idResponseDto.getIdentity());
-				regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
-						"Utilities::retrieveIdrepoJson():: IDREPOGETIDBYUIN GET service call ended Successfully");
-				try {
-					return (JSONObject) new JSONParser().parse(response);
-				} catch (org.json.simple.parser.ParseException e) {
-					regProcLogger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
-							ExceptionUtils.getStackTrace(e));
-					throw new IdRepoAppException("Error while parsing string to JSONObject", e);
-				}
-			} else {
-				regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
-						"Utilities::retrieveIdrepoJson():: IDREPOGETIDBYUIN GET service Returned NULL");
+				return (JSONObject) new JSONParser().parse(response);
+			} catch (org.json.simple.parser.ParseException e) {
+				regProcLogger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
+						ExceptionUtils.getStackTrace(e));
+				throw new IdRepoAppException("Error while parsing string to JSONObject", e);
 			}
-
+		} else {
+			regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
+					"Utilities::retrieveIdrepoJson():: IDREPOGETIDBYUIN GET service Returned NULL");
 		}
 		return null;
 	}
@@ -378,10 +390,7 @@ public class Utilities {
 		regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
 				"Utilities::retrieveIdrepoDocument()::entry");
 		ResponseDTO idResponseDto = retrieveIdrepoResponseObj(uin, "type", "all");
-		if (idResponseDto != null) {
-			return idResponseDto.getDocuments();
-		}
-		return null;
+		return idResponseDto != null ? idResponseDto.getDocuments() : null;
 	}
 
 	/**
@@ -393,6 +402,8 @@ public class Utilities {
 	 * @throws IOException
 	 */
 	public boolean uinPresentInIdRepo(String uin) throws ApisResourceAccessException, IOException {
+		regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
+				"Utilities::uinPresentInIdRepo()::entry");
 		return idRepoService.findUinFromIdrepo(uin, getGetRegProcessorDemographicIdentity()) != null;
 	}
 
@@ -433,13 +444,19 @@ public class Utilities {
 				"Utilities::getAbisQueueDetails()::entry");
 
 		try {
-			if(regProcessorAbisJson==null) {
-				String registrationProcessorAbis = Utilities.getJson(configServerFileStorageURL, registrationProcessorAbisJson);
-				regProcessorAbisJson = JsonUtil.objectMapperReadValue(registrationProcessorAbis, JSONObject.class);
-			}
-			JSONArray regProcessorAbisArray = JsonUtil.getJSONArray(regProcessorAbisJson, ABIS);
+			JSONObject abisJson = jsonCache.computeIfAbsent("abisJson", k -> {
+				try {
+					String jsonString = getJson(configServerFileStorageURL, registrationProcessorAbisJson);
+					return JsonUtil.objectMapperReadValue(jsonString, JSONObject.class);
+				} catch (IOException e) {
+					throw new RegistrationProcessorUnCheckedException(
+							PlatformErrorMessages.RPR_SYS_IO_EXCEPTION.getCode(),
+							PlatformErrorMessages.RPR_SYS_IO_EXCEPTION.getMessage(), e);
+				}
+			});
 
-			for (Object jsonObject : regProcessorAbisArray) {
+			JSONArray regProcessorAbisArray = JsonUtil.getJSONArray(abisJson, ABIS);
+			regProcessorAbisArray.parallelStream().forEach(jsonObject -> {
 				AbisQueueDetails abisQueueDetails = new AbisQueueDetails();
 				JSONObject json = new JSONObject((Map) jsonObject);
 				String userName = validateAbisQueueJsonAndReturnValue(json, USERNAME);
@@ -451,11 +468,13 @@ public class Utilities {
 				String outboundQueueName = validateAbisQueueJsonAndReturnValue(json, OUTBOUNDQUEUENAME);
 				String queueName = validateAbisQueueJsonAndReturnValue(json, NAME);
 				int inboundMessageTTL = validateAbisQueueJsonAndReturnIntValue(json, INBOUNDMESSAGETTL);
+
 				MosipQueue mosipQueue = mosipConnectionFactory.createConnection(typeOfQueue, userName, password,
 						failOverBrokerUrl, trustedPackages);
-				if (mosipQueue == null)
+				if (mosipQueue == null) {
 					throw new QueueConnectionNotFound(
 							PlatformErrorMessages.RPR_PIS_ABIS_QUEUE_CONNECTION_NULL.getMessage());
+				}
 
 				abisQueueDetails.setMosipQueue(mosipQueue);
 				abisQueueDetails.setInboundQueueName(inboundQueueName);
@@ -463,9 +482,8 @@ public class Utilities {
 				abisQueueDetails.setName(queueName);
 				abisQueueDetails.setInboundMessageTTL(inboundMessageTTL);
 				abisQueueDetailsList.add(abisQueueDetails);
-
-			}
-		} catch (IOException e) {
+			});
+		} catch (Exception e) {
 			throw new RegistrationProcessorCheckedException(PlatformErrorMessages.RPR_SYS_IO_EXCEPTION.getCode(),
 					PlatformErrorMessages.RPR_SYS_IO_EXCEPTION.getMessage(), e);
 		}
@@ -473,7 +491,6 @@ public class Utilities {
 				"Utilities::getAbisQueueDetails()::exit");
 
 		return abisQueueDetailsList;
-
 	}
 
 	/**
@@ -487,25 +504,27 @@ public class Utilities {
 		regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.USERID.toString(), "",
 				"Utilities::getRegistrationProcessorMappingJson()::entry");
 
-		if (mappingJsonObject == null) {
-			String mappingJsonString = Utilities.getJson(configServerFileStorageURL, getRegProcessorIdentityJson);
-			mappingJsonObject = objMapper.readValue(mappingJsonString, JSONObject.class);
+		String cacheKey = "mappingJson_" + packetSegment;
+		JSONObject mappingJson = jsonCache.computeIfAbsent(cacheKey, k -> {
+			try {
+				String mappingJsonString = getJson(configServerFileStorageURL, getRegProcessorIdentityJson);
+				return objMapper.readValue(mappingJsonString, JSONObject.class);
+			} catch (IOException e) {
+				throw new RegistrationProcessorUnCheckedException(PlatformErrorMessages.RPR_SYS_IO_EXCEPTION.getCode(),
+						PlatformErrorMessages.RPR_SYS_IO_EXCEPTION.getMessage(), e);
+			}
+		});
 
-		}
 		regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.USERID.toString(), "",
 				"Utilities::getRegistrationProcessorMappingJson()::exit");
-		return JsonUtil.getJSONObject(mappingJsonObject, packetSegment);
 
+		return JsonUtil.getJSONObject(mappingJson, packetSegment);
 	}
 
 	public String getMappingJsonValue(String key, String packetSegment) throws IOException {
 		JSONObject jsonObject = getRegistrationProcessorMappingJson(packetSegment);
 		Object obj = jsonObject.get(key);
-		if (obj instanceof LinkedHashMap) {
-			LinkedHashMap hm = (LinkedHashMap) obj;
-			return hm.get("value") != null ? hm.get("value").toString() : null;
-		}
-		return jsonObject.get(key) != null ? jsonObject.get(key).toString() : null;
+		return obj instanceof Map ? (String) ((Map) obj).get("value") : (obj != null ? obj.toString() : null);
 
 	}
 
@@ -553,12 +572,20 @@ public class Utilities {
 			String workflowInstanceId) {
 		regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.REGISTRATIONID.toString(),
 				registrationId, "Utilities::getLatestTransactionId()::entry");
-		RegistrationStatusEntity entity = registrationStatusDao.find(registrationId, process, iteration,
-				workflowInstanceId);
+
+		String cacheKey = registrationId + "_" + process + "_" + iteration + "_" + workflowInstanceId;
+
+		String latestTransactionId = transactionIdCache.computeIfAbsent(cacheKey, k -> {
+			RegistrationStatusEntity entity = registrationStatusDao.find(registrationId, process, iteration,
+					workflowInstanceId);
+
+			return entity != null ? entity.getLatestRegistrationTransactionId() : null;
+		});
+
 		regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.REGISTRATIONID.toString(),
 				registrationId, "Utilities::getLatestTransactionId()::exit");
-		return entity != null ? entity.getLatestRegistrationTransactionId() : null;
 
+		return latestTransactionId;
 	}
 
 	/**
@@ -571,33 +598,35 @@ public class Utilities {
 	 * @throws IOException                 Signals that an I/O exception has
 	 *                                     occurred.
 	 */
-	public JSONObject idrepoRetrieveIdentityByRid(String regId) throws ApisResourceAccessException, IdRepoAppException, IOException {
+	public JSONObject idrepoRetrieveIdentityByRid(String regId)
+			throws ApisResourceAccessException, IdRepoAppException, IOException {
 		regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.REGISTRATIONID.toString(),
-				regId, "Utilities::retrieveUIN()::entry");
+				regId, "Utilities::idrepoRetrieveIdentityByRid()::entry");
 
 		if (regId != null) {
 			List<String> pathSegments = new ArrayList<>();
 			pathSegments.add(regId);
-			IdResponseDTO1 idResponseDto;
 			regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.REGISTRATIONID.toString(),
-					regId, "Utilities::retrieveUIN():: RETRIEVEIDENTITYFROMRID GET service call Started");
+					regId,
+					"Utilities::idrepoRetrieveIdentityByRid():: RETRIEVEIDENTITYFROMRID GET service call Started");
 
-			idResponseDto = (IdResponseDTO1) restClientService.getApi(ApiName.RETRIEVEIDENTITYFROMRID, pathSegments, "",
-					"", IdResponseDTO1.class);
+			IdResponseDTO1 idResponseDto = (IdResponseDTO1) restClientService.getApi(ApiName.RETRIEVEIDENTITYFROMRID,
+					pathSegments, "", "", IdResponseDTO1.class);
+
 			regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
-					"Utilities::retrieveUIN():: RETRIEVEIDENTITYFROMRID GET service call ended successfully");
+					"Utilities::idrepoRetrieveIdentityByRid():: RETRIEVEIDENTITYFROMRID GET service call ended successfully");
 
-			if (!idResponseDto.getErrors().isEmpty()) {
+			if (idResponseDto == null || !idResponseDto.getErrors().isEmpty()) {
 				regProcLogger.error(LoggerFileConstant.SESSIONID.toString(),
 						LoggerFileConstant.REGISTRATIONID.toString(), regId,
-						"Utilities::retrieveUIN():: error with error message "
+						"Utilities::idrepoRetrieveIdentityByRid():: error with error message "
 								+ PlatformErrorMessages.RPR_PVM_INVALID_UIN.getMessage() + " "
 								+ idResponseDto.getErrors().toString());
 				throw new IdRepoAppException(
 						PlatformErrorMessages.RPR_PVM_INVALID_UIN.getMessage() + idResponseDto.getErrors().toString());
 			}
-			String response = objMapper.writeValueAsString(idResponseDto.getResponse().getIdentity());
 			try {
+				String response = objMapper.writeValueAsString(idResponseDto.getResponse().getIdentity());
 				return (JSONObject) new JSONParser().parse(response);
 			} catch (org.json.simple.parser.ParseException e) {
 				regProcLogger.error(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
@@ -612,8 +641,6 @@ public class Utilities {
 		return null;
 	}
 
-
-
 	/**
 	 * Validate abis queue json and return value.
 	 *
@@ -622,10 +649,8 @@ public class Utilities {
 	 * @return the string
 	 */
 	private String validateAbisQueueJsonAndReturnValue(JSONObject jsonObject, String key) {
-
 		String value = JsonUtil.getJSONValue(jsonObject, key);
 		if (value == null) {
-
 			throw new RegistrationProcessorUnCheckedException(
 					PlatformErrorMessages.ABIS_QUEUE_JSON_VALIDATION_FAILED.getCode(),
 					PlatformErrorMessages.ABIS_QUEUE_JSON_VALIDATION_FAILED.getMessage() + "::" + key);
@@ -642,10 +667,8 @@ public class Utilities {
 	 * @return the long value
 	 */
 	private int validateAbisQueueJsonAndReturnIntValue(JSONObject jsonObject, String key) {
-
 		Integer value = JsonUtil.getJSONValue(jsonObject, key);
 		if (value == null) {
-
 			throw new RegistrationProcessorUnCheckedException(
 					PlatformErrorMessages.ABIS_QUEUE_JSON_VALIDATION_FAILED.getCode(),
 					PlatformErrorMessages.ABIS_QUEUE_JSON_VALIDATION_FAILED.getMessage() + "::" + key);
@@ -666,26 +689,23 @@ public class Utilities {
 	public String getUinByVid(String vid) throws ApisResourceAccessException, VidCreationException {
 		regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.REGISTRATIONID.toString(), "",
 				"Utilities::getUinByVid():: entry");
+
 		List<String> pathSegments = new ArrayList<>();
 		pathSegments.add(vid);
-		String uin = null;
-		VidResponseDTO response;
+
 		regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.REGISTRATIONID.toString(), "",
 				"Stage::methodname():: RETRIEVEIUINBYVID GET service call Started");
 
-		response = (VidResponseDTO) restClientService.getApi(ApiName.GETUINBYVID, pathSegments, "", "",
+		VidResponseDTO response = (VidResponseDTO) restClientService.getApi(ApiName.GETUINBYVID, pathSegments, "", "",
 				VidResponseDTO.class);
 		regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
 				"Utilities::getUinByVid():: RETRIEVEIUINBYVID GET service call ended successfully");
 
-		if (!response.getErrors().isEmpty()) {
+		if (response == null || response.getResponse() == null || !response.getErrors().isEmpty()) {
 			throw new VidCreationException(PlatformErrorMessages.RPR_PGS_VID_EXCEPTION.getMessage(),
 					"VID creation exception");
-
-		} else {
-			uin = response.getResponse().getUin();
 		}
-		return uin;
+		return response.getResponse().getUin();
 	}
 
 	/**
@@ -703,11 +723,10 @@ public class Utilities {
 					"Utilities::retrieveIdrepoJson()::entry");
 			List<String> pathSegments = new ArrayList<>();
 			pathSegments.add(uin);
-			IdResponseDTO1 idResponseDto;
 
-			idResponseDto = (IdResponseDTO1) restClientService.getApi(ApiName.IDREPOGETIDBYUIN, pathSegments, "", "",
-					IdResponseDTO1.class);
-			if (idResponseDto == null) {
+			IdResponseDTO1 idResponseDto = (IdResponseDTO1) restClientService.getApi(ApiName.IDREPOGETIDBYUIN,
+					pathSegments, "", "", IdResponseDTO1.class);
+			if (idResponseDto == null || idResponseDto.getResponse() == null) {
 				regProcLogger.debug(LoggerFileConstant.SESSIONID.toString(), LoggerFileConstant.UIN.toString(), "",
 						"Utilities::retrieveIdrepoJson()::exit idResponseDto is null");
 				return null;
@@ -736,5 +755,4 @@ public class Utilities {
 		String machineId = id.substring(centerIdLength, centerIdLength + machineIdLength);
 		return centerId + "_" + machineId;
 	}
-
 }

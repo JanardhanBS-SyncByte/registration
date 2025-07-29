@@ -160,7 +160,7 @@ public class ValidatorConfig {
 			};
 		}
 	}
-	
+		
 /*	public Map<String, String> getValidationMap(){
 		Map<String, String> map=new HashMap<String, String>();
 		return map;

@@ -4,12 +4,10 @@ package io.mosip.registration.processor.stages.utils;
  * The Class StatusMessage.
  */
 public final class StatusMessage {
-
 	/**
 	 * Instantiates a new status message.
 	 */
 	private StatusMessage() {
-
 	}
 
 	/** The Constant PACKET_CHECKSUM_VALIDATION_FAILURE. */
@@ -33,5 +31,4 @@ public final class StatusMessage {
 	public static final String MASTERDATA_VALIDATION_FAILED_RESOURCE_NOT_FOUND = "Master data validation failed due to API resource access exception";
 
 	public static final String MANDATORY_FIELD_MISSING = "Mandatory Field is missing from ID JSON for NEW registration";
-
 }
